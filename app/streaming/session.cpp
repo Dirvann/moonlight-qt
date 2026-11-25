@@ -28,6 +28,10 @@
 #define SDL_CODE_GAMECONTROLLER_SET_MOTION_EVENT_STATE 103
 #define SDL_CODE_GAMECONTROLLER_SET_CONTROLLER_LED 104
 #define SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS 105
+#define SDL_CODE_CONNECTION_STATUS_UPDATE 106
+#define SDL_CODE_HIDE_NOTIFICATION 107
+
+#define NOTIFICATION_DURATION_MS 2000
 
 #include <openssl/rand.h>
 
@@ -175,26 +179,77 @@ void Session::clConnectionStatusUpdate(int connectionStatus)
                 "Connection status update: %d",
                 connectionStatus);
 
-    if (!s_ActiveSession->m_Preferences->connectionWarnings) {
+    // This is called on a moonlight-common-c thread. Hand it off to the
+    // main thread, which owns the status overlay.
+    SDL_Event event;
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_CONNECTION_STATUS_UPDATE;
+    event.user.data1 = (void*)(uintptr_t)connectionStatus;
+    event.user.data2 = nullptr;
+    SDL_PushEvent(&event);
+}
+
+Uint32 Session::notificationTimerCallback(Uint32, void* param)
+{
+    // Runs on the SDL timer thread, so just notify the main thread
+    SDL_Event event;
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_HIDE_NOTIFICATION;
+    event.user.data1 = param; // Notification generation
+    event.user.data2 = nullptr;
+    SDL_PushEvent(&event);
+
+    // One-shot timer
+    return 0;
+}
+
+void Session::showNotification(const QString& text)
+{
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Notification: %s",
+                qPrintable(text));
+
+    // The notification temporarily takes over the status update overlay. Any
+    // status it hides (connection warning, gamepad mouse mode) comes back
+    // once the notification expires.
+    m_NotificationActive = true;
+    m_NotificationGeneration++;
+
+    if (m_NotificationTimer != 0) {
+        SDL_RemoveTimer(m_NotificationTimer);
+    }
+    m_NotificationTimer = SDL_AddTimer(NOTIFICATION_DURATION_MS,
+                                       notificationTimerCallback,
+                                       (void*)m_NotificationGeneration);
+
+    m_OverlayManager.setOverlayColor(Overlay::OverlayStatusUpdate, {0xFF, 0xFF, 0xFF, 0xFF});
+    m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, text.toUtf8().constData());
+    m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+}
+
+void Session::updateStatusOverlay()
+{
+    if (m_NotificationActive) {
+        // The notification owns the overlay until it expires
         return;
     }
 
-    if (s_ActiveSession->m_MouseEmulationRefCount > 0) {
-        // Don't display the overlay if mouse emulation is already using it
-        return;
+    const char* text = nullptr;
+    if (m_MouseEmulationRefCount > 0) {
+        text = "Gamepad mouse mode active\nLong press Start to deactivate";
+    }
+    else if (m_ConnectionPoor && m_Preferences->connectionWarnings) {
+        text = m_StreamConfig.bitrate > 5000 ?
+                    "Slow connection to PC\nReduce your bitrate" : "Poor connection to PC";
     }
 
-    switch (connectionStatus)
-    {
-    case CONN_STATUS_POOR:
-        s_ActiveSession->m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate,
-                                                            s_ActiveSession->m_StreamConfig.bitrate > 5000 ?
-                                                                "Slow connection to PC\nReduce your bitrate" : "Poor connection to PC");
-        s_ActiveSession->m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
-        break;
-    case CONN_STATUS_OKAY:
-        s_ActiveSession->m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
-        break;
+    if (text != nullptr) {
+        m_OverlayManager.setOverlayColor(Overlay::OverlayStatusUpdate, {0xCC, 0x00, 0x00, 0xFF});
+        m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, text);
+        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+    }
+    else {
+        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
     }
 }
 
@@ -577,6 +632,10 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_UnexpectedTermination(true), // Failure prior to streaming is unexpected
       m_InputHandler(nullptr),
       m_MouseEmulationRefCount(0),
+      m_ConnectionPoor(false),
+      m_NotificationActive(false),
+      m_NotificationGeneration(0),
+      m_NotificationTimer(0),
       m_FlushingWindowEventsRef(0),
       m_ShouldExit(false),
       m_AsyncConnectionSuccess(false),
@@ -1566,13 +1625,7 @@ void Session::notifyMouseEmulationMode(bool enabled)
     SDL_assert(m_MouseEmulationRefCount >= 0);
 
     // We re-use the status update overlay for mouse mode notification
-    if (m_MouseEmulationRefCount > 0) {
-        m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, "Gamepad mouse mode active\nLong press Start to deactivate");
-        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
-    }
-    else {
-        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
-    }
+    updateStatusOverlay();
 }
 
 class AsyncConnectionStartThread : public QThread
@@ -2053,6 +2106,18 @@ void Session::exec()
                 m_InputHandler->setAdaptiveTriggers((uint16_t)(uintptr_t)event.user.data1,
                                                     (DualSenseOutputReport *)event.user.data2);
                 break;
+            case SDL_CODE_CONNECTION_STATUS_UPDATE:
+                m_ConnectionPoor = (int)(uintptr_t)event.user.data1 == CONN_STATUS_POOR;
+                updateStatusOverlay();
+                break;
+            case SDL_CODE_HIDE_NOTIFICATION:
+                // Ignore stale timers from notifications that were since replaced
+                if ((uintptr_t)event.user.data1 == m_NotificationGeneration) {
+                    m_NotificationTimer = 0;
+                    m_NotificationActive = false;
+                    updateStatusOverlay();
+                }
+                break;
             default:
                 SDL_assert(false);
             }
@@ -2325,6 +2390,11 @@ void Session::exec()
     }
 
 DispatchDeferredCleanup:
+    if (m_NotificationTimer != 0) {
+        SDL_RemoveTimer(m_NotificationTimer);
+        m_NotificationTimer = 0;
+    }
+
     // Switch back to synchronous logging mode
     StreamUtils::exitAsyncLoggingMode();
 

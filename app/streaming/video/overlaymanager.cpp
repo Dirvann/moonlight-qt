@@ -111,6 +111,12 @@ SDL_Color OverlayManager::getOverlayColor(OverlayType type)
     return m_Overlays[type].color;
 }
 
+void OverlayManager::setOverlayColor(OverlayType type, SDL_Color color)
+{
+    // Takes effect on the next text update or state change
+    m_Overlays[type].color = color;
+}
+
 void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
 {
     QWriteLocker lock(&m_OverlayRendererLock);

@@ -42,6 +42,9 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
 
         // Stop handling future input
         setCaptureActive(!isCaptureActive());
+        Session::get()->showNotification(isCaptureActive() ?
+                                             "Input captured" :
+                                             "Input released\nClick the window to capture again");
 
         // Force raise all keys to ensure they aren't stuck,
         // since we won't get their key up events.
@@ -79,6 +82,10 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
 
         // Recapture input
         setCaptureActive(true);
+
+        Session::get()->showNotification(m_AbsoluteMouseMode ?
+                                             "Mouse mode: remote desktop (absolute)" :
+                                             "Mouse mode: game (relative)");
         break;
 
     case KeyComboToggleCursorHide:
@@ -88,10 +95,14 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         if (!SDL_GetRelativeMouseMode()) {
             m_MouseCursorCapturedVisibilityState = !m_MouseCursorCapturedVisibilityState;
             SDL_ShowCursor(m_MouseCursorCapturedVisibilityState);
+            Session::get()->showNotification(m_MouseCursorCapturedVisibilityState ?
+                                                 "Local cursor: shown" :
+                                                 "Local cursor: hidden");
         }
         else {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                         "Cursor can only be shown in remote desktop mouse mode");
+            Session::get()->showNotification("Cursor can only be shown\nin remote desktop mouse mode");
         }
         break;
 
@@ -127,10 +138,13 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
 
             // SDL_GetClipboardText() allocates, so we must free
             SDL_free((void*)text);
+
+            Session::get()->showNotification("Clipboard text pasted");
         }
         else {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                         "No text in clipboard to paste!");
+            Session::get()->showNotification("Clipboard is empty");
         }
         break;
     }
@@ -146,6 +160,10 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
 
         // Apply the new region lock
         updatePointerRegionLock();
+
+        Session::get()->showNotification(m_PointerRegionLockActive ?
+                                             "Mouse locked to window: ON" :
+                                             "Mouse locked to window: OFF");
         break;
 
     case KeyComboQuitAndExit:
@@ -175,6 +193,10 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         }
 
         updateKeyboardGrabState();
+
+        Session::get()->showNotification(isSystemKeyCaptureActive() ?
+                                             "System key capture: ON\n(Alt+Tab, Win key go to host)" :
+                                             "System key capture: OFF");
         break;
 
     default:

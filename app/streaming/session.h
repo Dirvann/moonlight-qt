@@ -125,6 +125,10 @@ public:
 
     void setShouldExit(bool quitHostApp = false);
 
+    // Shows a short-lived on-screen notification (e.g. for key combos).
+    // Must be called on the main thread.
+    void showNotification(const QString& text);
+
 signals:
     void stageStarting(QString stage);
 
@@ -168,6 +172,11 @@ private:
     void toggleFullscreen();
 
     void notifyMouseEmulationMode(bool enabled);
+
+    void updateStatusOverlay();
+
+    static
+    Uint32 notificationTimerCallback(Uint32 interval, void* param);
 
     void updateOptimalWindowDisplayMode();
 
@@ -260,6 +269,10 @@ private:
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;
+    bool m_ConnectionPoor;
+    bool m_NotificationActive;
+    uintptr_t m_NotificationGeneration;
+    SDL_TimerID m_NotificationTimer;
     int m_FlushingWindowEventsRef;
     QStringList m_LaunchWarnings;
     bool m_ShouldExit;
